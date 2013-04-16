@@ -1,4 +1,6 @@
-# Script for integrating 
+# Script for integrating Stashboard (http://www.stashboard.org/) and an IRC Eggdrop
+# Portions of this script came from https://github.com/horgh/eggdrop-scripts
+# I used the google script as a baseline
 #
 # Created 2013-04-15
 #
@@ -12,83 +14,31 @@ package require http
 package require json
 package require htmlparse
 
-namespace eval google {
+namespace eval stashboard {
   #variable output_cmd "cd::putnow"
 	variable output_cmd "putserv"
 
 	# Not enforced for API queries
 	variable useragent "Lynx/2.8.8dev.2 libwww-FM/2.14 SSL-MM/1.4.1"
 
-	variable convert_url "http://www.google.ca/search"
-	variable convert_regexp {<table class=std>.*?<b>(.*?)</b>.*?</table>}
-
-	variable api_url "http://ajax.googleapis.com/ajax/services/search/"
+	variable api_url "http://stashboard.example.com/admin/api/v1/"
 
 	variable api_referer "http://www.egghelp.org"
 
-	bind pub	-|- "!g" google::search
-	bind pub	-|- "!google" google::search
-	bind pub	-|- "!g1" google::search1
-	bind pub	-|- "!news" google::news
-	bind pub	-|- "!images" google::images
-	bind pub	-|- "!convert" google::convert
+	bind pub	-|- "!servicelist" stashboard::servicelist     # Get list of known service objects
+	bind pub	-|- "!statuslist" stashboard::statuslist       # Get list of known status types
+	bind pub	-|- "!getallservices" stashboard::statusall    # Get current status of all services
+	bind pub	-|- "!getservice" stashboard::status           # Get status of named service
+	bind pub	-|- "!updateservice" stashboard::updateservice # Update named service with status message
 
-	setudef flag google
+
+	setudef flag stashboard
 }
 
-proc google::convert_fetch {terms} {
-	http::config -useragent $google::useragent
 
-	set query [http::formatQuery q $terms]
-	set token [http::geturl ${google::convert_url}?${query}]
-	set data [http::data $token]
-	set ncode [http::ncode $token]
-	http::cleanup $token
 
-	# debug
-	#set fid [open "g-debug.txt" w]
-	#puts $fid $data
-	#close $fid
 
-	if {$ncode != 200} {
-		error "HTTP query failed: $ncode"
-	}
 
-	return $data
-}
-
-proc google::convert_parse {html} {
-	if {![regexp -- $google::convert_regexp $html -> result]} {
-		error "Parse error or no result"
-	}
-	set result [htmlparse::mapEscapes $result]
-	# change <sup>num</sup> to ^num (exponent)
-	set result [regsub -all -- {<sup>(.*?)</sup>} $result {^\1}]
-	# strip rest of html code
-	return [regsub -all -- {<.*?>} $result ""]
-}
-
-# Query normal html for conversions
-proc google::convert {nick uhost hand chan argv} {
-	if {![channel get $chan google]} { return }
-
-	if {[string length $argv] == 0} {
-		$google::output_cmd "PRIVMSG $chan :Please provide a query."
-		return
-	}
-
-	if {[catch {google::convert_fetch $argv} data]} {
-		$google::output_cmd "PRIVMSG $chan :Error fetching results: $data."
-		return
-	}
-
-	if {[catch {google::convert_parse $data} result]} {
-		$google::output_cmd "PRIVMSG $chan :Error: $result."
-		return
-	}
-
-	$google::output_cmd "PRIVMSG $chan :\002$result\002"
-}
 
 # Output for results from api query
 proc google::output {chan url title content} {
@@ -99,7 +49,30 @@ proc google::output {chan url title content} {
 }
 
 # Return results from API query of $url
-proc google::api_fetch {terms url} {
+proc stashboard::api_fetch {terms url} {
+	set query [http::formatQuery v "1.0" q $terms safe off]
+	set headers [list Referer $stashboard::api_referer]
+
+	set token [http::geturl ${url}?${query} -headers $headers -method GET]
+	set data [http::data $token]
+	set ncode [http::ncode $token]
+	http::cleanup $token
+
+	# debug
+	#set fid [open "g-debug.txt" w]
+	#fconfigure $fid -translation binary -encoding binary
+	#puts $fid $data
+	#close $fid
+
+	if {$ncode != 200} {
+		error "HTTP query failed: $ncode"
+	}
+
+	return [json::json2dict $data]
+}
+
+# API Post
+proc stashboard::api_post {terms url} {
 	set query [http::formatQuery v "1.0" q $terms safe off]
 	set headers [list Referer $google::api_referer]
 
@@ -168,23 +141,15 @@ proc google::search {nick uhost hand chan argv} {
 	google::api_handler $chan $argv ${google::api_url}web
 }
 
-# Regular API search, 1 result
-proc google::search1 {nick uhost hand chan argv} {
-	if {![channel get $chan google]} { return }
 
-	google::api_handler $chan $argv ${google::api_url}web 1
-}
 
-# News from API
-proc google::news {nick uhost hand chan argv} {
-	if {![channel get $chan google]} { return }
-
-	google::api_handler $chan $argv ${google::api_url}news
-}
-
-# Images from API
-proc google::images {nick uhost hand chan argv} {
-	if {![channel get $chan google]} { return }
+# Update Stashboard
+proc stashboard::updateservice {nick uhost hand chan argv} {
+	if {![channel get $chan stashboard]} { return }
+	if {![isop $nick $chan]} {
+		$google::output_cmd "PRIVMSG $chan :$nick - You must be a channel operator."
+		return
+	}
 
 	google::api_handler $chan $argv ${google::api_url}images
 }
